@@ -1,7 +1,7 @@
 import { createStore, IS_DEMO } from "./store.js";
 import { PHRASES, phraseForPct, weekVerdict, groupVerdict, SUGGESTIONS, CHALLENGE_EMOJIS, AVATARS, COLORS, CHEER_EMOJIS } from "./content.js";
 
-const APP_NAME = (window.APP_CONFIG && window.APP_CONFIG.APP_NAME) || "Las Retadoras";
+const APP_NAME = (window.APP_CONFIG && window.APP_CONFIG.APP_NAME) || "Retos de Las q pasamos d 50's";
 const LS = {
   get: (k) => { try { return localStorage.getItem(k); } catch { return null; } },
   set: (k, v) => { try { localStorage.setItem(k, v); } catch {} },
@@ -177,7 +177,7 @@ function render() {
 
 // ---------------------------------------------------------------- tutorial
 const SLIDES = [
-  { icon: "👋", title: `¡Bienvenida a ${APP_NAME}!`, text: "Aquí cada una se pone sus <b>retos personales</b>… y las amigas nos animamos (y nos vigilamos un poquito 😉)." },
+  { icon: "👋", title: `¡Bienvenida!</h1><p class="serif tut-name">${APP_NAME}</p><h1 class="hidden">`, text: "Aquí cada una se pone sus <b>retos personales</b>… y las amigas nos animamos (y nos vigilamos un poquito 😉)." },
   { icon: "🎯", title: "1. Ponte tus retos", text: "Andar 5 km, comer sano, leer un libro… Lo que tú quieras. <b>Te damos ideas</b> si no sabes cuál elegir." },
   { icon: "✅", title: "2. Apúntalo cuando lo hagas", text: "Toca el día o pulsa <b>«Apuntar»</b>. Así de fácil. La semana va de <b>lunes a domingo</b>." },
   { icon: "👯‍♀️", title: "3. Mira a tus amigas", text: "Ve cómo van las demás y <b>mándales ánimos</b> con un toque: 👏 ❤️ 🔥 💪" },

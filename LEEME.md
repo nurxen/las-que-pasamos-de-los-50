@@ -1,4 +1,4 @@
-# ☕ Las Retadoras 🍸
+# ☕ Retos de Las q pasamos d 50's 🍸
 
 App web de retos personales entre amigas. Se abre con un enlace, se puede añadir a la pantalla del móvil como si fuera una app y los datos se comparten entre todas gracias a Supabase.
 
