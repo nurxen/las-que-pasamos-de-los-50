@@ -1,5 +1,5 @@
 import { createStore, IS_DEMO } from "./store.js";
-import { PHRASES, phraseForPct, weekVerdict, groupVerdict, SUGGESTIONS, CHALLENGE_EMOJIS, AVATARS, COLORS, CHEER_EMOJIS } from "./content.js";
+import { PHRASES, phraseForPct, weekVerdict, groupVerdict, SUGGESTIONS, CHALLENGE_EMOJIS, AVATARS, COLORS, CHEER_EMOJIS, GROUP_CHALLENGES, PRENDAS, QUICK_MESSAGES } from "./content.js";
 
 const APP_NAME = (window.APP_CONFIG && window.APP_CONFIG.APP_NAME) || "Retos de Las q pasamos d 50's";
 const LS = {
@@ -31,12 +31,15 @@ const $$ = (sel, root = document) => [...root.querySelectorAll(sel)];
 // ------------------------------------------------------------------ estado
 const S = {
   store: null,
-  data: { members: [], challenges: [], entries: [], cheers: [] },
+  data: { members: [], challenges: [], entries: [], cheers: [], messages: [] },
   me: LS.get("rt_me"),
   tab: "home",
+  homeOffset: 0, // 0 = esta semana, -1 = semana pasada (para apuntar lo olvidado)
   summaryOffset: 0,
   loading: true,
+  busy: new Set(), // evita dobles toques
 };
+if (LS.get("rt_big")) document.documentElement.classList.add("big-text");
 const root = document.getElementById("app");
 const today = () => new Date();
 const thisMonday = () => mondayOf(today());
@@ -69,13 +72,16 @@ function groupWeek(ws) {
   const pct = rows.length ? rows.reduce((a, r) => a + r.pct, 0) / rows.length : 0;
   return { pct, rows };
 }
+function memberStreak(memberId) {
+  let streak = 0;
+  for (let i = 1; i <= 11; i++) { const w = memberWeek(memberId, addDays(thisMonday(), -7 * i)); if (w.pct !== null && w.pct >= 0.75) streak++; else break; }
+  const cur = memberWeek(memberId, thisMonday());
+  return streak + (cur.pct !== null && cur.pct >= 0.75 ? 1 : 0);
+}
 function memberStats(memberId) {
   const weeks = [];
   for (let i = 7; i >= 0; i--) { const ws = addDays(thisMonday(), -7 * i); weeks.push({ ws, ...memberWeek(memberId, ws) }); }
-  let streak = 0;
-  for (let i = weeks.length - 2; i >= 0; i--) { if (weeks[i].pct !== null && weeks[i].pct >= 0.75) streak++; else break; }
-  const cur = weeks[weeks.length - 1];
-  if (cur.pct !== null && cur.pct >= 0.75) streak++;
+  const streak = memberStreak(memberId);
   const completed = weeks.reduce((a, w) => a + w.done, 0);
   const perfect = weeks.filter((w) => w.pct !== null && w.pct >= 1).length;
   const cheersSent = S.data.cheers.filter((c) => c.from_member === memberId).length;
@@ -96,6 +102,18 @@ function isQueen(memberId, ws) {
   if (!rows.length) return false;
   const best = Math.max(...rows.map((r) => r.pct));
   return best > 0 && rows.some((r) => r.m.id === memberId && r.pct === best);
+}
+const weekIndex = (ws) => Math.round(mondayOf(ws).getTime() / (7 * 86400000));
+const commonFor = (ws) => GROUP_CHALLENGES[((weekIndex(ws) % GROUP_CHALLENGES.length) + GROUP_CHALLENGES.length) % GROUP_CHALLENGES.length];
+const prendaFor = (ws) => PRENDAS[((weekIndex(ws) % PRENDAS.length) + PRENDAS.length) % PRENDAS.length];
+const isOneWeek = (c) => c.archived_at && new Date(c.archived_at) > new Date();
+function commonJoiners(ws) {
+  const g = commonFor(ws);
+  return challengesForWeekAll(ws).filter((c) => c.title === g.title).map((c) => member(c.member_id)).filter(Boolean);
+}
+function challengesForWeekAll(ws) {
+  const end = ymd(addDays(ws, 6));
+  return S.data.challenges.filter((c) => isoDay(c.created_at) <= end && (!c.archived_at || isoDay(c.archived_at) > end));
 }
 function describe(c) {
   return c.mode === "dias" ? `${fmt(c.target)} ${Number(c.target) === 1 ? "día" : "días"} a la semana` : `${fmt(c.target)} ${esc(c.unit)} a la semana`;
@@ -198,7 +216,10 @@ function renderTutorial(step = 0) {
       <button class="btn primary big next">${last ? "¡Empezar! ✨" : "Siguiente →"}</button>
     </div>
   </div>`;
-  const finish = () => { LS.set("rt_tutorial_done", "1"); render(); };
+  const finish = () => {
+    LS.set("rt_tutorial_done", "1");
+    if (LS.get("rt_code_ok") && S.loading) boot(); else render();
+  };
   $(".skip").onclick = finish;
   $(".next").onclick = () => (last ? finish() : renderTutorial(step + 1));
   const b = $(".back"); if (b) b.onclick = () => renderTutorial(step - 1);
@@ -278,6 +299,7 @@ function profileSheet(m) {
 const TABS = [
   { id: "home", icon: "🏠", label: "Mi semana" },
   { id: "group", icon: "👯‍♀️", label: "Las chicas" },
+  { id: "sofa", icon: "🛋️", label: "El sofá" },
   { id: "summary", icon: "🏆", label: "Resumen" },
   { id: "profile", icon: avatarIcon, label: "Mi perfil" },
 ];
@@ -291,13 +313,19 @@ function renderApp() {
       <div class="brand"><span class="serif">${esc(APP_NAME)}</span></div>
       ${IS_DEMO ? `<span class="demo-pill">DEMO</span>` : ""}
     </header>
-    <main class="content">${{ home: viewHome, group: viewGroup, summary: viewSummary, profile: viewProfile }[S.tab]()}</main>
+    <main class="content">${{ home: viewHome, group: viewGroup, sofa: viewSofa, summary: viewSummary, profile: viewProfile }[S.tab]()}</main>
     <nav class="tabbar">
-      ${TABS.map((t) => `<button class="tab ${S.tab === t.id ? "on" : ""}" data-tab="${t.id}"><span class="tab-ico">${typeof t.icon === "function" ? t.icon() : t.icon}</span><span>${t.label}</span></button>`).join("")}
+      ${TABS.map((t) => `<button class="tab ${S.tab === t.id ? "on" : ""}" data-tab="${t.id}"><span class="tab-ico">${typeof t.icon === "function" ? t.icon() : t.icon}${t.id === "sofa" && S.tab !== "sofa" && unreadCount() ? `<i class="dot-new">${unreadCount()}</i>` : ""}</span><span>${t.label}</span></button>`).join("")}
     </nav>`;
   root.dataset.tab = S.tab;
-  $$(".tab").forEach((b) => (b.onclick = () => { S.tab = b.dataset.tab; if (S.tab === "summary") S.summaryOffset = 0; render(); window.scrollTo(0, 0); }));
-  ({ home: bindHome, group: bindGroup, summary: bindSummary, profile: bindProfile })[S.tab]();
+  $$(".tab").forEach((b) => (b.onclick = () => {
+    S.tab = b.dataset.tab;
+    if (S.tab === "summary") S.summaryOffset = 0;
+    if (S.tab === "home") S.homeOffset = 0;
+    render(); window.scrollTo(0, 0);
+  }));
+  if (S.tab === "sofa") LS.set("rt_seen_feed", new Date().toISOString());
+  ({ home: bindHome, group: bindGroup, sofa: bindSofa, summary: bindSummary, profile: bindProfile })[S.tab]();
   if (prevTab === S.tab) window.scrollTo(0, scrollY);
 }
 
@@ -307,19 +335,24 @@ function phraseOfDay() {
   return PHRASES[n % PHRASES.length];
 }
 function viewHome() {
-  const m = me(), ws = thisMonday(), wk = memberWeek(m.id, ws);
+  const m = me(), cur = thisMonday(), past = S.homeOffset === -1;
+  const ws = past ? addDays(cur, -7) : cur;
+  const wk = memberWeek(m.id, ws);
   const dow = (today().getDay() + 6) % 7, left = 6 - dow;
-  const cheers = S.data.cheers.filter((c) => c.to_member === m.id && c.week_start === ymd(ws));
-  const last = memberWeek(m.id, addDays(ws, -7));
+  const cheers = S.data.cheers.filter((c) => c.to_member === m.id && c.week_start === ymd(cur));
+  const last = memberWeek(m.id, addDays(cur, -7));
+  const common = commonFor(cur);
+  const joiners = commonJoiners(cur);
+  const joined = joiners.some((x) => x.id === m.id);
   return `
     <section class="hello">
       <h1 class="serif">¡Hola, ${esc(m.name)}! ${esc(m.emoji)}</h1>
       <p class="muted cap">${longDate(today())}</p>
     </section>
-    <div class="quote">“${esc(phraseOfDay())}”</div>
-    ${dow === 6 ? `<div class="banner gold">🥂 ¡Hoy se cierra la semana! Último empujón y apunta todo lo que hayas hecho.</div>` : ""}
-    ${dow <= 1 && last.pct !== null ? `<button class="banner pink go-summary">${weekVerdict(last.pct).emoji} La semana pasada hiciste el <b>${pctTxt(last.pct)}</b>. ${weekVerdict(last.pct).title} <u>Ver resumen →</u></button>` : ""}
-    ${wk.total ? `
+    ${past ? "" : `<div class="quote">“${esc(phraseOfDay())}”</div>`}
+    ${!past && dow === 6 ? `<div class="banner gold">🥂 ¡Hoy se cierra la semana! Último empujón y apunta todo lo que hayas hecho.</div>` : ""}
+    ${!past && dow <= 1 && last.pct !== null ? `<button class="banner pink go-summary">${weekVerdict(last.pct).emoji} La semana pasada hiciste el <b>${pctTxt(last.pct)}</b>. ${weekVerdict(last.pct).title} <u>Ver resumen →</u></button>` : ""}
+    ${!past && wk.total ? `
     <section class="card week-card">
       ${ring(wk.pct, 116, 13, "var(--pink)")}
       <div>
@@ -329,14 +362,28 @@ function viewHome() {
         <p class="muted small">${left === 0 ? "Hoy es el último día" : `Quedan ${left} ${left === 1 ? "día" : "días"}`}</p>
       </div>
     </section>` : ""}
-    ${cheers.length ? `<section class="cheers-in"><b>Te están animando:</b> ${cheers.slice(-8).map((c) => `<span class="cheer-chip">${esc(c.emoji)} ${esc(member(c.from_member)?.name || "")}</span>`).join("")}</section>` : ""}
-    <h2 class="section-title">Mis retos de esta semana</h2>
-    ${wk.list.length ? wk.list.map((x) => challengeCard(x, ws)).join("") : `
+    ${!past && cheers.length ? `<section class="cheers-in"><b>Te están animando:</b> ${cheers.slice(-8).map((c) => `<span class="cheer-chip">${esc(c.emoji)} ${esc(member(c.from_member)?.name || "")}</span>`).join("")}</section>` : ""}
+    ${!past ? `
+    <section class="card common ${joined ? "joined" : ""}">
+      <div class="common-tag">🌟 Reto común de la semana</div>
+      <div class="row"><span class="ch-emoji">${esc(common.emoji)}</span><div class="grow"><h3>${esc(common.title)}</h3><p class="muted small">${describe(common)} · solo esta semana</p></div></div>
+      <div class="row between">
+        <div class="joiners">${joiners.length ? joiners.map((x) => avatar(x, "sm")).join("") + `<small class="muted"> ${joiners.length === 1 ? "se ha apuntado" : "se han apuntado"}</small>` : `<small class="muted">¡Sé la primera en apuntarte!</small>`}</div>
+        ${joined ? `<span class="badge-ok">¡Estás dentro! ✅</span>` : `<button class="btn primary join-common">¡Me apunto!</button>`}
+      </div>
+    </section>` : ""}
+    <div class="seg">
+      <button class="seg-btn ${past ? "" : "on"}" data-off="0">Esta semana</button>
+      <button class="seg-btn ${past ? "on" : ""}" data-off="-1">Semana pasada</button>
+    </div>
+    ${past ? `<div class="banner soft">📝 Estás en la <b>semana pasada</b> (${shortRange(ws)}). ¿Se te olvidó apuntar algo? Puedes hacerlo aquí.</div>` : ""}
+    <h2 class="section-title">${past ? "Mis retos de la semana pasada" : "Mis retos de esta semana"}</h2>
+    ${wk.list.length ? wk.list.map((x) => challengeCard(x, ws)).join("") : past ? `<div class="card pad empty"><p>La semana pasada no tenías retos.</p></div>` : `
       <div class="card pad empty">
         <div class="big-emoji">🎯</div>
         <p><b>Aún no tienes retos.</b><br>¿Te ayudo a elegir alguno?</p>
       </div>`}
-    <button class="btn primary big full add-ch">＋ Añadir un reto</button>
+    ${past ? "" : `<button class="btn primary big full add-ch">＋ Añadir un reto</button>`}
     <div class="spacer"></div>`;
 }
 function challengeCard(x, ws) {
@@ -359,45 +406,60 @@ function challengeCard(x, ws) {
   return `<article class="card ch ${complete ? "done" : ""}">
     <div class="ch-head">
       <span class="ch-emoji">${esc(c.emoji)}</span>
-      <div class="grow"><h3>${esc(c.title)}</h3><p class="muted small">${describe(c)}</p></div>
+      <div class="grow"><h3>${esc(c.title)}</h3><p class="muted small">${describe(c)}${isOneWeek(c) ? " · 🌟 reto común" : ""}</p></div>
       ${complete ? `<span class="badge-ok">¡Hecho! 🎉</span>` : ""}
       <button class="icon-btn edit-ch" data-ch="${c.id}" aria-label="Editar reto">⋯</button>
     </div>
     ${body}
   </article>`;
 }
+function homeWeek() { return S.homeOffset === -1 ? addDays(thisMonday(), -7) : thisMonday(); }
 function bindHome() {
-  const ws = thisMonday();
+  const ws = homeWeek();
   $$(".add-ch").forEach((b) => (b.onclick = () => challengeSheet(null)));
   $$(".go-summary").forEach((b) => (b.onclick = () => { S.tab = "summary"; S.summaryOffset = -1; render(); window.scrollTo(0, 0); }));
+  $$(".seg-btn").forEach((b) => (b.onclick = () => { S.homeOffset = Number(b.dataset.off); render(); }));
   $$(".edit-ch").forEach((b) => (b.onclick = () => challengeSheet(S.data.challenges.find((c) => c.id === b.dataset.ch))));
+  $$(".join-common").forEach((b) => (b.onclick = async () => {
+    b.disabled = true;
+    const g = commonFor(thisMonday());
+    const ends = addDays(thisMonday(), 7); // se quita solo el lunes que viene
+    await act(() => S.store.saveChallenge({ ...g, member_id: S.me, archived_at: ends.toISOString() }), "¡Te has apuntado al reto común! 🌟");
+  }));
   $$(".day").forEach((b) => (b.onclick = async () => {
+    const key = b.dataset.ch + b.dataset.day;
+    if (S.busy.has(key)) return;
+    S.busy.add(key);
     const c = S.data.challenges.find((x) => x.id === b.dataset.ch);
     const day = b.dataset.day;
     const before = progress(c, ws).pct;
     const existing = S.data.entries.filter((e) => e.challenge_id === c.id && e.day === day);
     b.classList.toggle("on"); // respuesta inmediata
-    await act(async () => {
-      if (existing.length) { for (const e of existing) await S.store.deleteEntry(e.id); }
-      else await S.store.addEntry({ challenge_id: c.id, member_id: c.member_id, day, amount: 1 });
-    });
+    try {
+      await act(async () => {
+        if (existing.length) { for (const e of existing) await S.store.deleteEntry(e.id); }
+        else await S.store.addEntry({ challenge_id: c.id, member_id: c.member_id, day, amount: 1 });
+      });
+    } finally { S.busy.delete(key); }
     celebrate(c, before, ws);
   }));
-  $$(".log").forEach((b) => (b.onclick = () => logSheet(S.data.challenges.find((x) => x.id === b.dataset.ch))));
+  $$(".log").forEach((b) => (b.onclick = () => logSheet(S.data.challenges.find((x) => x.id === b.dataset.ch), ws)));
 }
 function celebrate(c, before, ws) {
   const after = progress(c, ws).pct;
   if (before < 1 && after >= 1) {
     confetti(); toast(`¡Reto cumplido: ${c.title}! 🎉`);
+    try { navigator.vibrate && navigator.vibrate([60, 40, 120]); } catch {}
     const wk = memberWeek(c.member_id, ws);
     if (wk.pct >= 1) setTimeout(() => { confetti(); toast("¡¡PLENO SEMANAL!! Eres una reina 👑"); }, 1800);
   }
 }
 
-function logSheet(c) {
-  const ws = thisMonday(); const todayStr = ymd(today());
+function logSheet(c, ws = thisMonday()) {
+  const todayStr = ymd(today());
   let amount = Number(c.target) >= 10 ? Math.round(Number(c.target) / 5) : 1;
-  let day = todayStr;
+  const lastDay = ymd(addDays(ws, 6));
+  let day = todayStr <= lastDay ? todayStr : lastDay;
   const days = DAY_LETTERS.map((L, i) => ({ L, d: ymd(addDays(ws, i)), name: DAY_NAMES[i] })).filter((x) => x.d <= todayStr);
   const draw = (el) => {
     const p = progress(c, ws);
@@ -419,7 +481,7 @@ function logSheet(c) {
     <label class="lbl">¿Qué día?</label>
     <div class="chips" id="lgDays">${days.map((x) => `<button class="chip day-chip ${x.d === day ? "on" : ""}" data-d="${x.d}">${x.d === todayStr ? "Hoy" : x.name}</button>`).join("")}</div>
     <button class="btn primary big full" id="lgSave">Apuntar ✅</button>
-    <h4>Lo apuntado esta semana</h4>
+    <h4>Lo apuntado ${ymd(ws) === ymd(thisMonday()) ? "esta semana" : "esa semana"}</h4>
     <ul class="entry-list" id="lgList"></ul>`,
   (el, close) => {
     const amt = $("#lgAmt", el);
@@ -427,8 +489,10 @@ function logSheet(c) {
     $("#lgMinus", el).onclick = () => { amt.value = fmt(Math.max(0, read() - 1)); };
     $("#lgPlus", el).onclick = () => { amt.value = fmt(read() + 1); };
     $$(".day-chip", el).forEach((b) => (b.onclick = () => { day = b.dataset.d; $$(".day-chip", el).forEach((x) => x.classList.toggle("on", x === b)); }));
-    $("#lgSave", el).onclick = async () => {
+    $("#lgSave", el).onclick = async (ev) => {
       const v = read(); if (v <= 0) return toast("Pon una cantidad mayor que 0");
+      if (v > 100000) return toast("Esa cantidad parece demasiado grande 😅");
+      ev.currentTarget.disabled = true;
       const before = progress(c, ws).pct;
       await act(() => S.store.addEntry({ challenge_id: c.id, member_id: c.member_id, day, amount: v }), `¡Apuntado! +${fmt(v)} ${c.unit} 💪`);
       close(); celebrate(c, before, ws);
@@ -528,7 +592,7 @@ function challengeSheet(existing) {
 // ---------------------------------------------------------------- LAS CHICAS
 function viewGroup() {
   const ws = thisMonday(), g = groupWeek(ws);
-  const rows = S.data.members.map((m) => ({ m, ...memberWeek(m.id, ws) }))
+  const rows = S.data.members.map((m) => ({ m, ...memberWeek(m.id, ws), streak: memberStreak(m.id) }))
     .sort((a, b) => (b.pct ?? -1) - (a.pct ?? -1));
   return `
     <h1 class="serif">Las chicas</h1>
@@ -547,7 +611,7 @@ function friendCard(r, ws) {
   return `<article class="card friend" style="--c:${esc(r.m.color)}">
     <div class="friend-head">
       ${avatar(r.m, "lg")}
-      <div class="grow"><h3>${esc(r.m.name)} ${isMe ? `<small class="muted">(tú)</small>` : ""}</h3>${r.m.motto ? `<p class="muted small">“${esc(r.m.motto)}”</p>` : ""}</div>
+      <div class="grow"><h3>${esc(r.m.name)} ${isMe ? `<small class="muted">(tú)</small>` : ""}</h3>${r.m.motto ? `<p class="muted small">“${esc(r.m.motto)}”</p>` : ""}${r.streak >= 2 ? `<span class="streak">🔥 ${r.streak} semanas seguidas</span>` : ""}</div>
       ${r.pct === null ? "" : ring(r.pct, 64, 8, r.m.color)}
     </div>
     ${r.list.length ? `<ul class="mini-list">${r.list.map((x) => `<li><span>${esc(x.c.emoji)}</span><span class="grow">${esc(x.c.title)}<small>${x.c.mode === "dias" ? `${x.done}/${fmt(x.target)} días` : `${fmt(x.done)}/${fmt(x.target)} ${esc(x.c.unit)}`}</small>${bar(x.pct, x.pct >= 1 ? "var(--green)" : r.m.color)}</span>${x.pct >= 1 ? "✅" : ""}</li>`).join("")}</ul>`
@@ -560,12 +624,111 @@ function friendCard(r, ws) {
     </div>
   </article>`;
 }
+const MAX_CHEERS_PER_DAY = 3; // del mismo emoji a la misma amiga
+async function sendCheer(toId, emoji) {
+  const to = member(toId);
+  const todayStr = ymd(today());
+  const sentToday = S.data.cheers.filter((c) => c.from_member === S.me && c.to_member === toId && c.emoji === emoji && isoDay(c.created_at) === todayStr).length;
+  if (sentToday >= MAX_CHEERS_PER_DAY) return toast(`Ya le has mandado muchos ${emoji} hoy a ${to.name}. ¡Mañana más! 😉`);
+  await act(() => S.store.addCheer({ from_member: S.me, to_member: toId, emoji, week_start: ymd(thisMonday()) }), `Has mandado ${emoji} a ${to.name}`);
+}
 function bindGroup() {
-  $$(".cheer-btn").forEach((b) => (b.onclick = async () => {
-    b.classList.add("pop");
-    const to = member(b.dataset.to);
-    await act(() => S.store.addCheer({ from_member: S.me, to_member: to.id, emoji: b.dataset.e, week_start: ymd(thisMonday()) }), `Has mandado ${b.dataset.e} a ${to.name}`);
+  $$(".cheer-btn").forEach((b) => (b.onclick = () => { b.classList.add("pop"); sendCheer(b.dataset.to, b.dataset.e); }));
+}
+
+// ---------------------------------------------------------------- EL SOFÁ (muro)
+function unreadCount() {
+  if (!S.data.messages) return 0;
+  const seen = LS.get("rt_seen_feed") || "";
+  return S.data.messages.filter((m) => m.member_id !== S.me && m.created_at > seen).length;
+}
+function feedItems() {
+  const since = addDays(thisMonday(), -14).toISOString();
+  const items = [];
+  (S.data.messages || []).forEach((m) => items.push({ type: "msg", at: m.created_at, who: member(m.member_id), id: m.id, text: m.text }));
+  // Retos cumplidos: el momento en que se llegó al objetivo
+  for (const c of S.data.challenges) {
+    for (const off of [0, -1, -2]) {
+      const ws = addDays(thisMonday(), 7 * off);
+      if (!challengesForWeek(c.member_id, ws).includes(c)) continue;
+      const es = entriesFor(c, ws).sort((a, b) => a.created_at.localeCompare(b.created_at));
+      let acc = 0; const days = new Set();
+      for (const e of es) {
+        if (c.mode === "dias") days.add(e.day); else acc += Number(e.amount);
+        if ((c.mode === "dias" ? days.size : acc) >= Number(c.target)) { items.push({ type: "done", at: e.created_at, who: member(c.member_id), c }); break; }
+      }
+    }
+    if (c.created_at >= since) items.push({ type: "new", at: c.created_at, who: member(c.member_id), c });
+  }
+  // Ánimos agrupados por persona y día
+  const groups = {};
+  S.data.cheers.filter((c) => c.created_at >= since).forEach((c) => {
+    const k = c.from_member + c.to_member + isoDay(c.created_at);
+    (groups[k] = groups[k] || { type: "cheer", at: c.created_at, who: member(c.from_member), to: member(c.to_member), emojis: [] }).emojis.push(c.emoji);
+    if (c.created_at > groups[k].at) groups[k].at = c.created_at;
+  });
+  items.push(...Object.values(groups));
+  return items.filter((i) => i.who && i.at >= since).sort((a, b) => b.at.localeCompare(a.at)).slice(0, 80);
+}
+function timeAgo(iso) {
+  const d = new Date(iso), mins = Math.round((Date.now() - d) / 60000);
+  if (mins < 1) return "ahora mismo";
+  if (mins < 60) return `hace ${mins} min`;
+  const h = Math.round(mins / 60);
+  if (h < 24 && isoDay(iso) === ymd(today())) return `hace ${h} h`;
+  if (isoDay(iso) === ymd(addDays(today(), -1))) return `ayer, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  return `${DAY_NAMES[(d.getDay() + 6) % 7]} ${d.getDate()}, ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+function viewSofa() {
+  if (S.data.messages === null) return `
+    <h1 class="serif">El sofá 🛋️</h1>
+    <div class="card pad"><p><b>El muro aún no está activado.</b></p><p class="muted">Quien gestione la app tiene que volver a ejecutar el archivo <code>supabase/schema.sql</code> en Supabase (es seguro, no borra nada).</p></div>`;
+  const items = feedItems();
+  return `
+    <h1 class="serif">El sofá 🛋️</h1>
+    <p class="muted">Aquí se cuenta todo: lo que conseguís, los ánimos y vuestros mensajes.</p>
+    <section class="card pad composer">
+      <textarea class="input" id="msgText" maxlength="500" rows="2" placeholder="Escribe algo al grupo…"></textarea>
+      <div class="chips quick">${QUICK_MESSAGES.map((q) => `<button class="chip qm">${esc(q)}</button>`).join("")}</div>
+      <button class="btn primary big full" id="msgSend">Enviar 💌</button>
+    </section>
+    ${items.length ? `<ul class="feed">${items.map(feedRow).join("")}</ul>` : `<div class="card pad empty"><div class="big-emoji">🛋️</div><p>Todavía no hay nada por aquí. ¡Rompe el hielo!</p></div>`}
+    <div class="spacer"></div>`;
+}
+function feedRow(i) {
+  const mine = i.who.id === S.me;
+  let body = "", extra = "";
+  if (i.type === "msg") {
+    body = `<p class="bubble">${esc(i.text)}</p>`;
+    if (mine) extra = `<button class="icon-btn del-msg" data-id="${i.id}" aria-label="Borrar mensaje">🗑️</button>`;
+  } else if (i.type === "done") {
+    body = `<p>¡Ha cumplido su reto <b>${esc(i.c.emoji)} ${esc(i.c.title)}</b>! 🎉</p>`;
+    if (!mine) extra = `<button class="cheer-btn small clap" data-to="${i.who.id}">👏</button>`;
+  } else if (i.type === "new") {
+    body = `<p>Se ha puesto un reto nuevo: <b>${esc(i.c.emoji)} ${esc(i.c.title)}</b> (${describe(i.c)})</p>`;
+  } else if (i.type === "cheer") {
+    body = `<p>Ha mandado ${i.emojis.map(esc).join(" ")} a <b>${i.to ? esc(i.to.name) : "una amiga"}</b></p>`;
+  }
+  return `<li class="feed-item ${i.type} ${mine ? "mine" : ""}">
+    ${avatar(i.who)}
+    <div class="grow"><div class="feed-head"><b>${esc(i.who.name)}</b><small class="muted">${timeAgo(i.at)}</small></div>${body}</div>
+    ${extra}
+  </li>`;
+}
+function bindSofa() {
+  const ta = $("#msgText"); if (!ta) return;
+  $$(".qm").forEach((b) => (b.onclick = () => { ta.value = b.textContent; ta.focus(); }));
+  $("#msgSend").onclick = async (ev) => {
+    const text = ta.value.trim();
+    if (!text) return toast("Escribe algo primero 😊");
+    ev.currentTarget.disabled = true;
+    await act(() => S.store.addMessage({ member_id: S.me, text }), "¡Mensaje enviado! 💌");
+  };
+  $$(".del-msg").forEach((b) => (b.onclick = async () => {
+    if (!b.dataset.sure) { b.dataset.sure = "1"; b.textContent = "¿Borrar?"; b.classList.add("warn"); return; }
+    await act(() => S.store.deleteMessage(b.dataset.id), "Mensaje borrado");
   }));
+  $$(".clap").forEach((b) => (b.onclick = () => { b.classList.add("pop"); sendCheer(b.dataset.to, "👏"); }));
 }
 
 // ---------------------------------------------------------------- RESUMEN
@@ -615,7 +778,9 @@ function viewSummary() {
       ${best > 0 ? `<div class="award"><span>👑</span><b>Reina de la semana</b><small>${ranked.filter((r) => r.pct === best).map((r) => esc(r.m.name)).join(" y ")}</small></div>` : ""}
       ${topCheer ? `<div class="award"><span>📣</span><b>La más animadora</b><small>${esc(member(topCheer[0])?.name || "")} (${topCheer[1]} ánimos)</small></div>` : ""}
       ${ranked.filter((r) => r.pct >= 1).length ? `<div class="award"><span>🏆</span><b>Pleno</b><small>${ranked.filter((r) => r.pct >= 1).map((r) => esc(r.m.name)).join(", ")}</small></div>` : ""}
-    </div>` : `<div class="card pad empty"><div class="big-emoji">🗓️</div><p>Esta semana no hay retos apuntados.</p></div>`}
+    </div>
+    ${prendaCard(ws, ranked, current)}
+    <button class="btn whatsapp big full" id="shareWa">📲 Compartir en el grupo de WhatsApp</button>` : `<div class="card pad empty"><div class="big-emoji">🗓️</div><p>Esta semana no hay retos apuntados.</p></div>`}
     <h2 class="section-title">El grupo, semana a semana</h2>
     <section class="card pad">
       <div class="hist">${history.map((h) => `<div class="hcol ${h.sel ? "sel" : ""}"><small>${Math.round(h.p * 100)}</small><div class="hbar"><span style="height:${Math.round(h.p * 100)}%"></span></div><small>${h.w.getDate()}/${h.w.getMonth() + 1}</small></div>`).join("")}</div>
@@ -623,17 +788,51 @@ function viewSummary() {
     </section>
     <div class="spacer"></div>`;
 }
+function prendaCard(ws, ranked, current) {
+  const pr = prendaFor(ws);
+  let who = "";
+  if (ranked.length >= 2) {
+    const val = pr.who === "first" ? ranked[0].pct : ranked[ranked.length - 1].pct;
+    const names = ranked.filter((r) => r.pct === val).map((r) => esc(r.m.name)).join(" y ");
+    who = current ? `Ahora mismo le tocaría a: <b>${names}</b>` : `Le toca a: <b>${names}</b> ${pr.who === "first" ? "🎉" : "😜"}`;
+  }
+  return `<section class="card prenda"><div class="prenda-emoji">🎲</div><div class="grow"><small class="muted">Prenda de la semana</small><p><b>${pr.emoji} ${esc(pr.text)}</b></p>${who ? `<p class="small">${who}</p>` : ""}</div></section>`;
+}
+function summaryText(ws) {
+  const g = groupWeek(ws), v = groupVerdict(g.pct);
+  const ranked = [...g.rows].sort((a, b) => b.pct - a.pct);
+  const medals = ["🥇", "🥈", "🥉"];
+  const pr = prendaFor(ws);
+  const lines = [
+    `🏆 *${APP_NAME}*`,
+    `Semana del ${shortRange(ws)}`,
+    "",
+    `${v.emoji} *${v.title}* El grupo ha conseguido el *${pctTxt(g.pct)}* de los retos.`,
+    "",
+    ...ranked.map((r, i) => `${medals[i] || "▫️"} ${r.m.name}: ${pctTxt(r.pct)} (${r.done}/${r.total} retos)`),
+    "",
+    `🎲 Prenda: ${pr.emoji} ${pr.text}`,
+    "",
+    `👉 ${location.origin}${location.pathname}`,
+  ];
+  return lines.join("\n");
+}
 const phraseShort = (p) => (p >= 1 ? "¡pleno! 🎉" : p >= 0.75 ? "casi, casi 🔥" : p >= 0.5 ? "a mitad 💪" : p > 0 ? "arrancando 🌱" : "sin empezar ☕");
 function bindSummary() {
   const p = $("#wPrev"), n = $("#wNext");
   if (p) p.onclick = () => { S.summaryOffset--; render(); };
   if (n) n.onclick = () => { S.summaryOffset = Math.min(0, S.summaryOffset + 1); render(); };
+  const sh = $("#shareWa");
+  if (sh) sh.onclick = () => {
+    const ws = addDays(thisMonday(), 7 * S.summaryOffset);
+    window.open("https://wa.me/?text=" + encodeURIComponent(summaryText(ws)), "_blank");
+  };
 }
 
 // ---------------------------------------------------------------- PERFIL
 function viewProfile() {
   const m = me(), st = memberStats(m.id);
-  const archived = S.data.challenges.filter((c) => c.member_id === m.id && c.archived_at);
+  const archived = S.data.challenges.filter((c) => c.member_id === m.id && c.archived_at && !isOneWeek(c));
   return `
     <section class="profile-head" style="--c:${esc(m.color)}">
       ${avatar(m, "xl")}
@@ -656,6 +855,8 @@ function viewProfile() {
     <h2 class="section-title">Ayuda</h2>
     <div class="menu">
       <button class="menu-item" id="installBtn">📱 Ponerla en la pantalla del móvil</button>
+      <button class="menu-item" id="remindBtn">⏰ Ponerme un recordatorio diario</button>
+      <button class="menu-item row between" id="bigBtn"><span>🔠 Letra más grande</span><span class="switch ${LS.get("rt_big") ? "on" : ""}"><i></i></span></button>
       <button class="menu-item" id="tutBtn">📖 Ver otra vez el tutorial</button>
       <button class="menu-item" id="switchBtn">🔄 No soy ${esc(m.name)} (cambiar de persona)</button>
     </div>
@@ -666,6 +867,21 @@ function bindProfile() {
   $("#tutBtn").onclick = () => { LS.del("rt_tutorial_done"); render(); };
   $("#switchBtn").onclick = () => { S.me = null; LS.del("rt_me"); render(); };
   $("#installBtn").onclick = installSheet;
+  $("#remindBtn").onclick = reminderSheet;
+  $("#bigBtn").onclick = () => {
+    const on = !LS.get("rt_big");
+    if (on) LS.set("rt_big", "1"); else LS.del("rt_big");
+    document.documentElement.classList.toggle("big-text", on);
+    render();
+  };
+}
+
+function reminderSheet() {
+  const hours = [["0900", "9:00", "Por la mañana"], ["1300", "13:00", "A mediodía"], ["1900", "19:00", "Por la tarde"], ["2100", "21:00", "Después de cenar"], ["2200", "22:00", "Antes de dormir"]];
+  sheet(`<h2 class="serif">Recordatorio diario ⏰</h2>
+    <p>Elige a qué hora quieres que tu móvil te avise cada día para apuntar tus retos. Se añadirá a tu <b>calendario</b>.</p>
+    <div class="menu">${hours.map(([f, h, t]) => `<a class="menu-item row between" href="recordatorios/recordatorio-${f}.ics" target="_blank" rel="noopener"><span><b>${h}</b> · ${t}</span><span>＋</span></a>`).join("")}</div>
+    <p class="muted small">Al tocar una hora, el móvil te preguntará si quieres añadir el evento al calendario: dile que <b>sí</b>. Para quitarlo, bórralo desde la app de Calendario.</p>`);
 }
 
 let deferredInstall = null;
@@ -701,17 +917,12 @@ async function boot() {
 (async () => {
   S.store = await createStore().catch((e) => { console.error(e); return null; });
   if (!S.store) { root.innerHTML = `<div class="center-screen"><div class="big-emoji">😕</div><h2>No puedo conectar</h2><p class="muted">Revisa tu conexión a internet.</p><button class="btn primary big" onclick="location.reload()">Reintentar</button></div>`; return; }
-  // el tutorial y la contraseña llaman a render(); al terminar arrancamos
-  const origRender = render;
   S.store.subscribe(softReload);
   document.addEventListener("visibilitychange", () => { if (!document.hidden && !S.loading) softReload(); });
   if (LS.get("rt_tutorial_done") && LS.get("rt_code_ok")) await boot();
-  else origRender();
+  else render();
 })();
 
-// Cuando se termina el tutorial con la contraseña ya puesta, hay que cargar datos
-const _set = LS.set;
-LS.set = (k, v) => { _set(k, v); if (k === "rt_tutorial_done" && LS.get("rt_code_ok") && S.loading) boot(); };
 
 if ("serviceWorker" in navigator) {
   window.addEventListener("load", () => navigator.serviceWorker.register("./sw.js").catch(() => {}));

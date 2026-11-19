@@ -12,13 +12,16 @@ async function supabaseBackend() {
   return {
     async checkCode(code) { return ok(await sb.rpc("check_group_code", { code })); },
     async loadAll(sinceDay) {
-      const [members, challenges, entries, cheers] = await Promise.all([
+      const [members, challenges, entries, cheers, messages] = await Promise.all([
         sb.from("members").select("*").order("created_at"),
         sb.from("challenges").select("*").order("created_at"),
-        sb.from("entries").select("*").gte("day", sinceDay),
-        sb.from("cheers").select("*").gte("week_start", sinceDay),
+        sb.from("entries").select("*").gte("day", sinceDay).limit(10000),
+        sb.from("cheers").select("*").gte("week_start", sinceDay).limit(10000),
+        sb.from("messages").select("*").gte("created_at", sinceDay).order("created_at", { ascending: false }).limit(300),
       ]);
-      return { members: ok(members), challenges: ok(challenges), entries: ok(entries), cheers: ok(cheers) };
+      // Si aún no se ha ejecutado el SQL nuevo, el muro queda desactivado pero lo demás funciona
+      const msgs = messages.error ? null : messages.data;
+      return { members: ok(members), challenges: ok(challenges), entries: ok(entries), cheers: ok(cheers), messages: msgs };
     },
     async saveMember(m) {
       if (m.id) return ok(await sb.from("members").update({ name: m.name, emoji: m.emoji, color: m.color, motto: m.motto }).eq("id", m.id).select().single());
@@ -27,12 +30,15 @@ async function supabaseBackend() {
     async saveChallenge(c) {
       const row = { member_id: c.member_id, title: c.title, emoji: c.emoji, mode: c.mode, target: c.target, unit: c.unit || "" };
       if (c.id) return ok(await sb.from("challenges").update(row).eq("id", c.id).select().single());
+      if (c.archived_at) row.archived_at = c.archived_at; // retos de una sola semana (reto común)
       return ok(await sb.from("challenges").insert(row).select().single());
     },
     async archiveChallenge(id) { return ok(await sb.from("challenges").update({ archived_at: new Date().toISOString() }).eq("id", id)); },
     async addEntry(e) { return ok(await sb.from("entries").insert(e).select().single()); },
     async deleteEntry(id) { return ok(await sb.from("entries").delete().eq("id", id)); },
     async addCheer(c) { return ok(await sb.from("cheers").insert(c).select().single()); },
+    async addMessage(m) { return ok(await sb.from("messages").insert(m).select().single()); },
+    async deleteMessage(id) { return ok(await sb.from("messages").delete().eq("id", id)); },
     subscribe(cb) {
       sb.channel("retadoras")
         .on("postgres_changes", { event: "*", schema: "public" }, cb)
@@ -47,6 +53,7 @@ function demoBackend() {
   const load = () => { try { return JSON.parse(localStorage.getItem(KEY)); } catch { return null; } };
   const save = (db) => { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch {} };
   let db = load() || seed();
+  db.messages = db.messages || [];
   save(db);
   const now = () => new Date().toISOString();
   return {
@@ -56,6 +63,7 @@ function demoBackend() {
         members: [...db.members], challenges: [...db.challenges],
         entries: db.entries.filter((e) => e.day >= sinceDay),
         cheers: db.cheers.filter((c) => c.week_start >= sinceDay),
+        messages: db.messages.filter((m) => m.created_at >= sinceDay).sort((a, b) => b.created_at.localeCompare(a.created_at)),
       };
     },
     async saveMember(m) {
@@ -64,12 +72,14 @@ function demoBackend() {
     },
     async saveChallenge(c) {
       if (c.id) { const i = db.challenges.findIndex((x) => x.id === c.id); db.challenges[i] = { ...db.challenges[i], ...c }; save(db); return db.challenges[i]; }
-      const row = { ...c, id: uid(), created_at: now(), archived_at: null }; db.challenges.push(row); save(db); return row;
+      const row = { archived_at: null, ...c, id: uid(), created_at: now() }; db.challenges.push(row); save(db); return row;
     },
     async archiveChallenge(id) { const c = db.challenges.find((x) => x.id === id); if (c) c.archived_at = now(); save(db); },
     async addEntry(e) { const row = { ...e, id: uid(), created_at: now() }; db.entries.push(row); save(db); return row; },
     async deleteEntry(id) { db.entries = db.entries.filter((e) => e.id !== id); save(db); },
     async addCheer(c) { const row = { ...c, id: uid(), created_at: now() }; db.cheers.push(row); save(db); return row; },
+    async addMessage(m) { const row = { ...m, id: uid(), created_at: now() }; db.messages.push(row); save(db); return row; },
+    async deleteMessage(id) { db.messages = db.messages.filter((m) => m.id !== id); save(db); },
     subscribe() {},
   };
 }
@@ -93,7 +103,7 @@ function seed() {
     ["📖", "Leer", "cantidad", 100, "páginas"], ["🧘‍♀️", "Hacer yoga", "dias", 3, ""],
     ["💧", "Beber 2 litros de agua", "dias", 5, ""], ["📞", "Llamar a mi madre", "cantidad", 2, "llamadas"],
   ];
-  const db = { members: [], challenges: [], entries: [], cheers: [] };
+  const db = { members: [], challenges: [], entries: [], cheers: [], messages: [] };
   let seedN = 7;
   const rnd = () => { seedN = (seedN * 9301 + 49297) % 233280; return seedN / 233280; };
   people.forEach(([name, emoji, color, motto], i) => {
@@ -115,6 +125,16 @@ function seed() {
         }
       }
     }
+  });
+  const msgs = [
+    [1, "¡Chicas, esta semana voy a por el pleno! 💪", 2],
+    [3, "Hoy me ha costado salir a andar, pero lo he hecho 🚶‍♀️", 1],
+    [0, "¿Brunch el domingo para celebrarlo? 🥂", 0],
+  ];
+  msgs.forEach(([who, text, daysAgo]) => {
+    const t = new Date(today); t.setDate(t.getDate() - daysAgo); t.setHours(9 + who * 2);
+    if (t > new Date()) t.setTime(Date.now() - 3600e3 * (who + 1));
+    db.messages.push({ id: uid(), member_id: db.members[who].id, text, created_at: t.toISOString() });
   });
   return db;
 }

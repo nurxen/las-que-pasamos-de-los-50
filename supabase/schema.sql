@@ -1,10 +1,11 @@
 -- =====================================================================
 --  LAS RETADORAS · Base de datos para Supabase
 --  Cómo usarlo: Supabase > tu proyecto > SQL Editor > New query >
---  pega TODO este archivo > pulsa "Run". Solo hay que hacerlo una vez.
+--  pega TODO este archivo > pulsa "Run".
+--  Se puede volver a ejecutar sin miedo (por ejemplo, al actualizar la app):
+--  no borra nada ni cambia la contraseña.
 -- =====================================================================
 
-create extension if not exists pgcrypto;
 
 -- Las amigas del grupo
 create table if not exists public.members (
@@ -50,15 +51,26 @@ create table if not exists public.cheers (
   created_at  timestamptz not null default now()
 );
 
+-- Mensajes del muro "El sofá"
+create table if not exists public.messages (
+  id          uuid primary key default gen_random_uuid(),
+  member_id   uuid not null references public.members(id) on delete cascade,
+  text        text not null check (char_length(text) between 1 and 500),
+  created_at  timestamptz not null default now()
+);
+create index if not exists messages_created_idx on public.messages(created_at);
+
 -- Ajustes privados (el código del grupo). Nadie puede leer esta tabla desde la app.
 create table if not exists public.app_settings (
   key   text primary key,
   value text not null
 );
 
--- 👇👇 CAMBIA AQUÍ EL CÓDIGO DEL GRUPO (lo que se pide la primera vez) 👇👇
+-- 👇👇 CAMBIA AQUÍ LA CONTRASEÑA DEL GRUPO (lo que se pide la primera vez) 👇👇
 insert into public.app_settings(key, value) values ('group_code', 'amigas')
-on conflict (key) do update set value = excluded.value;
+on conflict (key) do nothing;
+-- Para cambiarla más adelante, ejecuta solo esta línea (con tu palabra):
+--   update public.app_settings set value = 'nuevacontraseña' where key = 'group_code';
 
 -- Comprueba el código sin revelar cuál es
 create or replace function public.check_group_code(code text)
@@ -79,24 +91,27 @@ alter table public.members      enable row level security;
 alter table public.challenges   enable row level security;
 alter table public.entries      enable row level security;
 alter table public.cheers       enable row level security;
+alter table public.messages     enable row level security;
 alter table public.app_settings enable row level security; -- sin políticas = privada
 
 drop policy if exists "grupo" on public.members;
 drop policy if exists "grupo" on public.challenges;
 drop policy if exists "grupo" on public.entries;
 drop policy if exists "grupo" on public.cheers;
+drop policy if exists "grupo" on public.messages;
 create policy "grupo" on public.members    for all to anon, authenticated using (true) with check (true);
 create policy "grupo" on public.challenges for all to anon, authenticated using (true) with check (true);
 create policy "grupo" on public.entries    for all to anon, authenticated using (true) with check (true);
 create policy "grupo" on public.cheers     for all to anon, authenticated using (true) with check (true);
+create policy "grupo" on public.messages   for all to anon, authenticated using (true) with check (true);
 
-grant select, insert, update, delete on public.members, public.challenges, public.entries, public.cheers to anon, authenticated;
+grant select, insert, update, delete on public.members, public.challenges, public.entries, public.cheers, public.messages to anon, authenticated;
 
 -- Tiempo real: cuando una amiga apunta algo, a las demás se les actualiza solo
 do $$
 declare t text;
 begin
-  foreach t in array array['members','challenges','entries','cheers'] loop
+  foreach t in array array['members','challenges','entries','cheers','messages'] loop
     begin
       execute format('alter publication supabase_realtime add table public.%I', t);
     exception when duplicate_object then null;

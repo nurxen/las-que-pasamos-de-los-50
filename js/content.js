@@ -106,3 +106,41 @@ export const AVATARS = ["🌸","🌺","🌻","🌷","🦋","👑","💃","🍸",
 export const COLORS = ["#E8579B","#7B3FA0","#F28C38","#2E9C9A","#D94848","#3D7DD8","#C9A227","#4E9F3D"];
 
 export const CHEER_EMOJIS = ["👏","❤️","🔥","💪"];
+
+// Reto común: cada semana se propone uno a todo el grupo (dura solo esa semana)
+export const GROUP_CHALLENGES = [
+  { emoji: "💧", title: "Beber 2 litros de agua", mode: "dias", target: 5, unit: "" },
+  { emoji: "🚶‍♀️", title: "Andar entre todas", mode: "cantidad", target: 10, unit: "km" },
+  { emoji: "📵", title: "Sin móvil en la cena", mode: "dias", target: 5, unit: "" },
+  { emoji: "🍎", title: "Fruta cada día", mode: "dias", target: 6, unit: "" },
+  { emoji: "😴", title: "A la cama antes de las 23:30", mode: "dias", target: 4, unit: "" },
+  { emoji: "📞", title: "Llamar a alguien que hace mucho que no ves", mode: "cantidad", target: 1, unit: "llamada" },
+  { emoji: "🧘‍♀️", title: "10 minutos de estiramientos", mode: "dias", target: 4, unit: "" },
+  { emoji: "🍬", title: "Semana sin dulces", mode: "dias", target: 6, unit: "" },
+  { emoji: "📖", title: "Leer antes de dormir", mode: "dias", target: 4, unit: "" },
+  { emoji: "🪜", title: "Escaleras en vez de ascensor", mode: "dias", target: 5, unit: "" },
+  { emoji: "✍️", title: "Apuntar 3 cosas buenas del día", mode: "dias", target: 5, unit: "" },
+  { emoji: "🌳", title: "Un paseo por la naturaleza", mode: "cantidad", target: 1, unit: "paseo" },
+];
+
+// Prenda de la semana. who: 'last' = le toca a la que menos haga; 'first' = premio para la reina
+export const PRENDAS = [
+  { emoji: "☕", text: "La que menos haga invita al café", who: "last" },
+  { emoji: "👑", text: "La reina de la semana elige el plan del próximo encuentro", who: "first" },
+  { emoji: "🥐", text: "La que menos haga trae el desayuno a la próxima quedada", who: "last" },
+  { emoji: "🎤", text: "La que menos haga manda un audio cantando al grupo", who: "last" },
+  { emoji: "🍸", text: "A la reina de la semana la invitamos al vermú", who: "first" },
+  { emoji: "📸", text: "La que menos haga manda un selfie haciendo deporte", who: "last" },
+  { emoji: "💐", text: "La reina elige el reto común de la semana que viene", who: "first" },
+  { emoji: "🧁", text: "La que menos haga trae algo rico (¡pero sano!) a la quedada", who: "last" },
+];
+
+// Mensajes rápidos para el muro
+export const QUICK_MESSAGES = [
+  "¡Vamos, chicas! 💪",
+  "¡Hoy lo he cumplido! 🎉",
+  "Necesito ánimos 🙈",
+  "¿Quién se apunta a andar? 🚶‍♀️",
+  "¡Qué orgullosa estoy de vosotras! 🥹",
+  "¿Brunch para celebrarlo? 🥂",
+];
