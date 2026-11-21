@@ -56,6 +56,10 @@ Manda por WhatsApp el enlace y la contraseña del grupo. Cada una:
 - **Las chicas**: el progreso de cada una, su racha 🔥 y botones para mandar ánimos 👏 ❤️ 🔥 💪 (máximo 3 iguales al día a la misma amiga, para que no se haga trampa con «la más animadora»).
 - **🛋️ El sofá**: un muro con mensajes del grupo, los retos cumplidos, los retos nuevos y los ánimos. Avisa con un numerito rojo cuando hay mensajes nuevos.
 - **Resumen** (lunes a domingo): % del grupo, veredicto («¡Lo habéis conseguido!»), clasificación, 👑 reina de la semana, 📣 la más animadora y el historial de semanas anteriores.
+- **🏆 Resumen automático cada domingo a medianoche**: «La Presentadora» publica en *El sofá* el resumen de la semana con la ganadora y la clasificación. Además, la primera vez que cada una abre la app en la semana nueva ve una **entrega de premios** con confeti, el podio, su resultado y la prenda.
+  - Lo publica Supabase solo (con su programador de tareas, *pg_cron*). Si en tu proyecto no se pudiera activar, no pasa nada: lo publica la app la primera vez que alguien la abre el lunes. Nunca sale repetido.
+  - Para comprobar que está programado: en Supabase, menú **Integrations → Cron** (o **Database → Cron Jobs**) debe aparecer `resumen-semanal`.
+  - Los avisos del móvil van por el calendario: en *Mi perfil → Recordatorio* hay un aviso el **domingo a las 20:00** («¡último día, apunta todo!») y otro el **lunes a las 9:30** («¡mira quién ha ganado!»).
 - **🎲 Prenda de la semana** en el resumen (por ejemplo, «la que menos haga invita al café») y botón para **compartir el resumen en WhatsApp**.
 - **Mi perfil**: nombre, dibujito, color y lema; racha de semanas, retos cumplidos y medallas.
   - **🔠 Letra más grande** con un interruptor.
@@ -66,6 +70,7 @@ Manda por WhatsApp el enlace y la contraseña del grupo. Cada una:
 - Cada reto se cumple al llegar al objetivo semanal (lo que se pase cuenta como 100%).
 - Tu % semanal es la media de tus retos. El del grupo es la media de las que tienen retos.
 - Una semana cuenta como **conseguida** a partir del 75%, y es **perfecta** al 100%.
+- **Gana la semana** la que tenga el porcentaje más alto. Si hay empate, ganan todas las empatadas.
 - Si quitas un reto, desaparece desde esa semana, pero las semanas anteriores se quedan como estaban.
 
 ## Personalizar

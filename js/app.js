@@ -44,6 +44,7 @@ const root = document.getElementById("app");
 const today = () => new Date();
 const thisMonday = () => mondayOf(today());
 const me = () => S.data.members.find((m) => m.id === S.me);
+const BOT = { id: "bot", name: "La Presentadora", emoji: "🎙️", color: "#C9A227" };
 const member = (id) => S.data.members.find((m) => m.id === id);
 
 // ------------------------------------------------------------------ cálculos
@@ -262,7 +263,7 @@ function renderWho() {
       <button class="who-btn new" id="newMe"><span class="who-emoji">➕</span><span>Soy nueva</span></button>
     </div>
   </div>`;
-  $$(".who-btn[data-id]").forEach((b) => (b.onclick = () => { S.me = b.dataset.id; LS.set("rt_me", S.me); S.tab = "home"; render(); }));
+  $$(".who-btn[data-id]").forEach((b) => (b.onclick = () => { S.me = b.dataset.id; LS.set("rt_me", S.me); S.tab = "home"; render(); maybeCeremony(); }));
   $("#newMe").onclick = () => profileSheet(null);
 }
 
@@ -645,7 +646,7 @@ function unreadCount() {
 function feedItems() {
   const since = addDays(thisMonday(), -14).toISOString();
   const items = [];
-  (S.data.messages || []).forEach((m) => items.push({ type: "msg", at: m.created_at, who: member(m.member_id), id: m.id, text: m.text }));
+  (S.data.messages || []).forEach((m) => items.push({ type: m.kind === "summary" ? "summary" : "msg", at: m.created_at, who: m.member_id ? member(m.member_id) : BOT, id: m.id, text: m.text, ws: m.week_start }));
   // Retos cumplidos: el momento en que se llegó al objetivo
   for (const c of S.data.challenges) {
     for (const off of [0, -1, -2]) {
@@ -689,7 +690,7 @@ function viewSofa() {
     <p class="muted">Aquí se cuenta todo: lo que conseguís, los ánimos y vuestros mensajes.</p>
     <section class="card pad composer">
       <textarea class="input" id="msgText" maxlength="500" rows="2" placeholder="Escribe algo al grupo…"></textarea>
-      <div class="chips quick">${QUICK_MESSAGES.map((q) => `<button class="chip qm">${esc(q)}</button>`).join("")}</div>
+      <div class="chips quick scroll-x">${QUICK_MESSAGES.map((q) => `<button class="chip qm">${esc(q)}</button>`).join("")}</div>
       <button class="btn primary big full" id="msgSend">Enviar 💌</button>
     </section>
     ${items.length ? `<ul class="feed">${items.map(feedRow).join("")}</ul>` : `<div class="card pad empty"><div class="big-emoji">🛋️</div><p>Todavía no hay nada por aquí. ¡Rompe el hielo!</p></div>`}
@@ -698,7 +699,9 @@ function viewSofa() {
 function feedRow(i) {
   const mine = i.who.id === S.me;
   let body = "", extra = "";
-  if (i.type === "msg") {
+  if (i.type === "summary") {
+    body = `<p class="bubble summary-bubble">${esc(i.text)}</p>${i.ws ? `<button class="link open-week" data-ws="${esc(i.ws)}">Ver el resumen completo →</button>` : ""}`;
+  } else if (i.type === "msg") {
     body = `<p class="bubble">${esc(i.text)}</p>`;
     if (mine) extra = `<button class="icon-btn del-msg" data-id="${i.id}" aria-label="Borrar mensaje">🗑️</button>`;
   } else if (i.type === "done") {
@@ -729,15 +732,16 @@ function bindSofa() {
     await act(() => S.store.deleteMessage(b.dataset.id), "Mensaje borrado");
   }));
   $$(".clap").forEach((b) => (b.onclick = () => { b.classList.add("pop"); sendCheer(b.dataset.to, "👏"); }));
+  $$(".open-week").forEach((b) => (b.onclick = () => openSummaryWeek(parseYmd(b.dataset.ws))));
 }
 
 // ---------------------------------------------------------------- RESUMEN
 function viewSummary() {
   const ws = addDays(thisMonday(), 7 * S.summaryOffset);
   const current = S.summaryOffset === 0;
-  const g = groupWeek(ws);
+  const g = weekResult(ws);
   const v = groupVerdict(g.pct);
-  const ranked = [...g.rows].sort((a, b) => b.pct - a.pct);
+  const ranked = g.ranked;
   const best = ranked.length ? ranked[0].pct : 0;
   const cheersWeek = S.data.cheers.filter((c) => c.week_start === ymd(ws));
   const byFrom = {}; cheersWeek.forEach((c) => (byFrom[c.from_member] = (byFrom[c.from_member] || 0) + 1));
@@ -788,6 +792,70 @@ function viewSummary() {
     </section>
     <div class="spacer"></div>`;
 }
+function openSummaryWeek(ws) {
+  S.tab = "summary";
+  S.summaryOffset = Math.max(-11, Math.min(0, Math.round((ws - thisMonday()) / (7 * 86400000))));
+  render(); window.scrollTo(0, 0);
+}
+function weekResult(ws) {
+  const g = groupWeek(ws);
+  const ranked = [...g.rows].sort((a, b) => b.pct - a.pct || b.done - a.done || a.m.name.localeCompare(b.m.name));
+  const best = ranked.length ? ranked[0].pct : 0;
+  const winners = best > 0 ? ranked.filter((r) => r.pct === best) : [];
+  return { ...g, ranked, best, winners };
+}
+const joinNames = (arr) => arr.length <= 1 ? arr.join("") : arr.slice(0, -1).join(", ") + " y " + arr[arr.length - 1];
+// El mismo texto que publica Supabase (se usa en modo demo)
+function weeklyPostText(ws) {
+  const r = weekResult(ws);
+  if (!r.rows.length) return "";
+  const we = addDays(ws, 6);
+  const rango = `${ws.getDate()}${ws.getMonth() === we.getMonth() ? "" : " de " + MONTHS[ws.getMonth()]} al ${we.getDate()} de ${MONTHS[we.getMonth()]}`;
+  const verdict = r.pct >= 0.9 ? "¡Lo habéis petado, chicas! 🥂" : r.pct >= 0.7 ? "¡Lo habéis conseguido! 🎉" : r.pct >= 0.5 ? "¡Vamos por buen camino! 💪" : "Semana flojita… ¡la próxima, a por todas! ☕";
+  const medals = ["🥇", "🥈", "🥉"];
+  return [
+    `🏆 Resumen de la semana del ${rango}`, "",
+    `${verdict} El grupo ha conseguido el ${pctTxt(r.pct)} de los retos.`, "",
+    ...(r.winners.length ? [`👑 ${r.winners.length > 1 ? "Ganadoras" : "Ganadora"}: ${joinNames(r.winners.map((w) => w.m.name))} con el ${pctTxt(r.best)}`, ""] : []),
+    ...r.ranked.map((x, i) => `${medals[i] || "▫️"} ${x.m.name}: ${pctTxt(x.pct)} (${x.done}/${x.total} retos)`), "",
+    "¡Nueva semana, nuevos retos! 💪",
+  ].join("\n");
+}
+async function ensureWeeklySummary() {
+  const lw = addDays(thisMonday(), -7);
+  if (S.data.messages === null || !groupWeek(lw).rows.length) return;
+  if (S.data.messages.some((m) => m.kind === "summary" && m.week_start === ymd(lw))) return;
+  try { await S.store.postWeeklySummary(ymd(lw), weeklyPostText(lw)); await reload(); } catch (e) { console.warn(e); }
+}
+// Entrega de premios: la primera vez que abres la app en la semana nueva
+function maybeCeremony() {
+  const lw = addDays(thisMonday(), -7);
+  if (!me() || LS.get("rt_ceremony") === ymd(lw)) return;
+  const r = weekResult(lw);
+  if (!r.rows.length) return;
+  LS.set("rt_ceremony", ymd(lw));
+  const mine = r.rows.find((x) => x.m.id === S.me);
+  const iWon = r.winners.some((w) => w.m.id === S.me);
+  const gv = groupVerdict(r.pct);
+  const pr = prendaFor(lw);
+  const prWho = r.ranked.length >= 2 ? r.ranked.filter((x) => x.pct === (pr.who === "first" ? r.ranked[0].pct : r.ranked[r.ranked.length - 1].pct)).map((x) => x.m.name) : [];
+  const podium = r.ranked.slice(0, 3);
+  sheet(`<div class="ceremony">
+    <p class="muted small center">Semana del ${shortRange(lw)}</p>
+    <h2 class="serif center">🏆 ¡Y la ${r.winners.length > 1 ? "ganadoras son" : "ganadora es"}…!</h2>
+    ${r.winners.length ? `<div class="winners">${r.winners.map((w) => `<div class="winner">${avatar(w.m, "xl")}<b>${esc(w.m.name)}</b><span>${pctTxt(w.pct)}</span></div>`).join("")}</div>` : `<p class="center">Esta vez no ha ganado nadie… ¡la próxima semana!</p>`}
+    ${iWon ? `<div class="banner gold center">👑 ¡Eres tú! ¡Enhorabuena, reina!</div>` : mine ? `<div class="banner pink center">Tú hiciste el <b>${pctTxt(mine.pct)}</b>. ${esc(weekVerdict(mine.pct).title)} ${weekVerdict(mine.pct).emoji}</div>` : ""}
+    <div class="podium">${podium.map((x, i) => `<div class="step s${i + 1}">${avatar(x.m)}<small>${esc(x.m.name)}</small><b>${["🥇", "🥈", "🥉"][i]}</b><span>${pctTxt(x.pct)}</span></div>`).join("")}</div>
+    <p class="center"><b>${gv.emoji} ${esc(gv.title)}</b><br>El grupo consiguió el <b>${pctTxt(r.pct)}</b> de los retos.</p>
+    ${prWho.length ? `<p class="center small">🎲 Prenda: ${pr.emoji} ${esc(pr.text)}<br>Le toca a: <b>${esc(joinNames(prWho))}</b></p>` : ""}
+    <button class="btn primary big full" id="cerSee">Ver el resumen completo</button>
+    <button class="btn whatsapp big full" id="cerShare">📲 Compartir en WhatsApp</button>
+  </div>`, (el, close) => {
+    $("#cerSee", el).onclick = () => { close(); openSummaryWeek(lw); };
+    $("#cerShare", el).onclick = () => window.open("https://wa.me/?text=" + encodeURIComponent(summaryText(lw)), "_blank");
+  });
+  setTimeout(confetti, 300);
+}
 function prendaCard(ws, ranked, current) {
   const pr = prendaFor(ws);
   let who = "";
@@ -799,8 +867,8 @@ function prendaCard(ws, ranked, current) {
   return `<section class="card prenda"><div class="prenda-emoji">🎲</div><div class="grow"><small class="muted">Prenda de la semana</small><p><b>${pr.emoji} ${esc(pr.text)}</b></p>${who ? `<p class="small">${who}</p>` : ""}</div></section>`;
 }
 function summaryText(ws) {
-  const g = groupWeek(ws), v = groupVerdict(g.pct);
-  const ranked = [...g.rows].sort((a, b) => b.pct - a.pct);
+  const g = weekResult(ws), v = groupVerdict(g.pct);
+  const ranked = g.ranked;
   const medals = ["🥇", "🥈", "🥉"];
   const pr = prendaFor(ws);
   const lines = [
@@ -809,6 +877,7 @@ function summaryText(ws) {
     "",
     `${v.emoji} *${v.title}* El grupo ha conseguido el *${pctTxt(g.pct)}* de los retos.`,
     "",
+    ...(g.winners.length ? [`👑 ${g.winners.length > 1 ? "Ganadoras" : "Ganadora"}: ${joinNames(g.winners.map((w) => w.m.name))}`, ""] : []),
     ...ranked.map((r, i) => `${medals[i] || "▫️"} ${r.m.name}: ${pctTxt(r.pct)} (${r.done}/${r.total} retos)`),
     "",
     `🎲 Prenda: ${pr.emoji} ${pr.text}`,
@@ -832,7 +901,8 @@ function bindSummary() {
 // ---------------------------------------------------------------- PERFIL
 function viewProfile() {
   const m = me(), st = memberStats(m.id);
-  const archived = S.data.challenges.filter((c) => c.member_id === m.id && c.archived_at && !isOneWeek(c));
+  const commonTitles = new Set(GROUP_CHALLENGES.map((g) => g.title));
+  const archived = S.data.challenges.filter((c) => c.member_id === m.id && c.archived_at && !isOneWeek(c) && !commonTitles.has(c.title));
   return `
     <section class="profile-head" style="--c:${esc(m.color)}">
       ${avatar(m, "xl")}
@@ -881,7 +951,12 @@ function reminderSheet() {
   sheet(`<h2 class="serif">Recordatorio diario ⏰</h2>
     <p>Elige a qué hora quieres que tu móvil te avise cada día para apuntar tus retos. Se añadirá a tu <b>calendario</b>.</p>
     <div class="menu">${hours.map(([f, h, t]) => `<a class="menu-item row between" href="recordatorios/recordatorio-${f}.ics" target="_blank" rel="noopener"><span><b>${h}</b> · ${t}</span><span>＋</span></a>`).join("")}</div>
-    <p class="muted small">Al tocar una hora, el móvil te preguntará si quieres añadir el evento al calendario: dile que <b>sí</b>. Para quitarlo, bórralo desde la app de Calendario.</p>`);
+    <h4>Avisos de fin de semana</h4>
+    <div class="menu">
+      <a class="menu-item row between" href="recordatorios/aviso-domingo.ics" target="_blank" rel="noopener"><span><b>Domingo 20:00</b> · «¡Último día, apunta todo!»</span><span>＋</span></a>
+      <a class="menu-item row between" href="recordatorios/aviso-ganadora.ics" target="_blank" rel="noopener"><span><b>Lunes 9:30</b> · «¡Mira quién ha ganado!»</span><span>＋</span></a>
+    </div>
+    <p class="muted small">Al tocar una opción, el móvil te preguntará si quieres añadir el evento al calendario: dile que <b>sí</b>. Para quitarlo, bórralo desde la app de Calendario.</p>`);
 }
 
 let deferredInstall = null;
@@ -912,13 +987,18 @@ async function boot() {
     return;
   }
   S.loading = false; render();
+  await ensureWeeklySummary();
+  maybeCeremony();
 }
 
 (async () => {
   S.store = await createStore().catch((e) => { console.error(e); return null; });
   if (!S.store) { root.innerHTML = `<div class="center-screen"><div class="big-emoji">😕</div><h2>No puedo conectar</h2><p class="muted">Revisa tu conexión a internet.</p><button class="btn primary big" onclick="location.reload()">Reintentar</button></div>`; return; }
   S.store.subscribe(softReload);
-  document.addEventListener("visibilitychange", () => { if (!document.hidden && !S.loading) softReload(); });
+  document.addEventListener("visibilitychange", () => {
+    if (document.hidden || S.loading) return;
+    reload().then(() => { ensureWeeklySummary(); maybeCeremony(); }).catch(console.error);
+  });
   if (LS.get("rt_tutorial_done") && LS.get("rt_code_ok")) await boot();
   else render();
 })();

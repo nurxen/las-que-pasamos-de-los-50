@@ -9,19 +9,29 @@ async function supabaseBackend() {
   const { createClient } = await import("https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm");
   const sb = createClient(cfg.SUPABASE_URL, cfg.SUPABASE_KEY);
   const ok = ({ data, error }) => { if (error) throw error; return data; };
+  // Supabase devuelve como mucho 1000 filas por consulta: pedimos por páginas
+  const fetchAll = async (build) => {
+    const out = [];
+    for (let from = 0; ; from += 1000) {
+      const { data, error } = await build().order("id").range(from, from + 999);
+      if (error) throw error;
+      out.push(...data);
+      if (data.length < 1000) return out;
+    }
+  };
   return {
     async checkCode(code) { return ok(await sb.rpc("check_group_code", { code })); },
     async loadAll(sinceDay) {
       const [members, challenges, entries, cheers, messages] = await Promise.all([
         sb.from("members").select("*").order("created_at"),
         sb.from("challenges").select("*").order("created_at"),
-        sb.from("entries").select("*").gte("day", sinceDay).limit(10000),
-        sb.from("cheers").select("*").gte("week_start", sinceDay).limit(10000),
+        fetchAll(() => sb.from("entries").select("*").gte("day", sinceDay)),
+        fetchAll(() => sb.from("cheers").select("*").gte("week_start", sinceDay)),
         sb.from("messages").select("*").gte("created_at", sinceDay).order("created_at", { ascending: false }).limit(300),
       ]);
       // Si aún no se ha ejecutado el SQL nuevo, el muro queda desactivado pero lo demás funciona
       const msgs = messages.error ? null : messages.data;
-      return { members: ok(members), challenges: ok(challenges), entries: ok(entries), cheers: ok(cheers), messages: msgs };
+      return { members: ok(members), challenges: ok(challenges), entries, cheers, messages: msgs };
     },
     async saveMember(m) {
       if (m.id) return ok(await sb.from("members").update({ name: m.name, emoji: m.emoji, color: m.color, motto: m.motto }).eq("id", m.id).select().single());
@@ -39,6 +49,7 @@ async function supabaseBackend() {
     async addCheer(c) { return ok(await sb.from("cheers").insert(c).select().single()); },
     async addMessage(m) { return ok(await sb.from("messages").insert(m).select().single()); },
     async deleteMessage(id) { return ok(await sb.from("messages").delete().eq("id", id)); },
+    async postWeeklySummary() { const { data, error } = await sb.rpc("post_weekly_summary"); if (error) console.warn(error); return data; },
     subscribe(cb) {
       sb.channel("retadoras")
         .on("postgres_changes", { event: "*", schema: "public" }, cb)
@@ -80,6 +91,11 @@ function demoBackend() {
     async addCheer(c) { const row = { ...c, id: uid(), created_at: now() }; db.cheers.push(row); save(db); return row; },
     async addMessage(m) { const row = { ...m, id: uid(), created_at: now() }; db.messages.push(row); save(db); return row; },
     async deleteMessage(id) { db.messages = db.messages.filter((m) => m.id !== id); save(db); },
+    // En modo demo el texto lo prepara la app (en Supabase lo hace la base de datos)
+    async postWeeklySummary(weekStart, text) {
+      if (!text || db.messages.some((m) => m.kind === "summary" && m.week_start === weekStart)) return "ya publicado";
+      db.messages.push({ id: uid(), member_id: null, kind: "summary", week_start: weekStart, text, created_at: now() }); save(db); return "publicado";
+    },
     subscribe() {},
   };
 }

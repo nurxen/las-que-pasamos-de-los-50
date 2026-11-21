@@ -1,6 +1,6 @@
 // Permite abrir la app como "aplicación" desde la pantalla de inicio.
 // Siempre intenta descargar lo último de internet; si no hay conexión, usa la copia guardada.
-const CACHE = "retos50-v3";
+const CACHE = "retos50-v4";
 const SHELL = ["./", "index.html", "css/styles.css", "js/config.js", "js/app.js", "js/store.js", "js/content.js", "manifest.webmanifest", "icons/icon-192.png", "icons/apple-touch-icon.png"];
 
 self.addEventListener("install", (e) => {
